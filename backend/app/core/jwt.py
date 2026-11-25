@@ -14,10 +14,14 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import logging
+
 import jwt
 from jwt import PyJWKClient
 
 from app.core.config import Settings
+
+log = logging.getLogger("auth.jwt")
 
 ALLOWED_ALGORITHMS = ["RS256"]
 TENANT_RE = re.compile(r"^[A-Z0-9_]{1,64}$")
@@ -72,9 +76,17 @@ class TokenValidator:
             )
         except jwt.ExpiredSignatureError:
             raise AuthError("token_expired") from None
-        except (jwt.PyJWTError, Exception):  # includes JWKS fetch problems: fail closed
+        except Exception as exc:  # includes JWKS fetch problems: fail closed
+            # The client only ever sees a generic "invalid_token". The SPECIFIC reason is logged server-side
+            # so operators can diagnose misconfiguration (issuer/audience mismatch, JWKS unreachable, ...).
+            # PyJWT / urllib messages describe the failed check; they never contain the token itself.
+            log.warning("token rejected: %s: %s", type(exc).__name__, str(exc)[:300])
             raise AuthError("invalid_token") from None
-        return self._extract(claims)
+        try:
+            return self._extract(claims)
+        except AuthError as exc:
+            log.warning("token rejected after signature check: %s (azp=%s)", exc.code, claims.get("azp"))
+            raise
 
     def _extract(self, claims: dict[str, Any]) -> TokenClaims:
         azp = claims.get("azp")
