@@ -1,0 +1,64 @@
+{
+  "roles": {
+    "ADMIN": {
+      "permissions": [
+        "user:read", "user:manage",
+        "role:read", "role:manage",
+        "permission:read",
+        "agent:read", "agent:execute", "agent:manage",
+        "tool:configure",
+        "audit:read",
+        "invoice:read", "invoice:search", "invoice:approve",
+        "purchase_order:create", "purchase_order:read",
+        "document:read", "document:search",
+        "approval_request:read", "approval_request:decide"
+      ]
+    },
+    "MANAGER": {
+      "permissions": [
+        "agent:read", "agent:execute",
+        "invoice:read", "invoice:search", "invoice:approve",
+        "purchase_order:create", "purchase_order:read",
+        "document:read", "document:search",
+        "approval_request:read"
+      ]
+    },
+    "EMPLOYEE": {
+      "permissions": [
+        "agent:read", "agent:execute",
+        "invoice:read", "invoice:search",
+        "document:read", "document:search"
+      ]
+    }
+  },
+
+  "clearance": { "ADMIN": 4, "MANAGER": 3, "EMPLOYEE": 2 },
+  "classification_levels": { "PUBLIC": 1, "INTERNAL": 2, "CONFIDENTIAL": 3, "RESTRICTED": 4 },
+  "classified_types": ["invoice", "document"],
+  "department_scoped_types": ["invoice", "document", "purchase_order"],
+  "non_collection_actions": ["approve"],
+
+  "cross_tenant_grants": {},
+
+  "agent_roles": {
+    "FINANCE_AGENT": ["ADMIN", "MANAGER", "EMPLOYEE"]
+  },
+  "agent_tools": {
+    "FINANCE_AGENT": [
+      "search_invoices", "read_invoice", "create_purchase_order",
+      "approve_invoice", "search_documents"
+    ]
+  },
+
+  "tools": {
+    "search_invoices":       { "resource_type": "invoice",        "action": "search"  },
+    "read_invoice":          { "resource_type": "invoice",        "action": "read"    },
+    "create_purchase_order": { "resource_type": "purchase_order", "action": "create"  },
+    "approve_invoice":       { "resource_type": "invoice",        "action": "approve" },
+    "search_documents":      { "resource_type": "document",       "action": "search"  }
+  },
+
+  "human_approval_thresholds": {
+    "approve_invoice": 8000
+  }
+}

@@ -1,0 +1,197 @@
+# Enterprise AI Agent Authentication & Authorization Platform
+#
+# Network design (defence in depth):
+#   edge : reachable from the host (only Keycloak + backend publish ports, bound to 127.0.0.1)
+#   data : INTERNAL network (no host access, no internet). PostgreSQL and OPA live ONLY here,
+#          so the browser/host can never talk to OPA or the database directly.
+#
+# Start:      docker compose up --build
+# Tests:      docker compose --profile test run --rm opa-tests
+#             docker compose --profile test run --rm tests
+# Reset all:  docker compose down -v
+
+name: enterprise-ai-security
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-development}
+  DATABASE_URL: postgresql+psycopg://eai_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}@postgres:5432/${APP_DB_NAME:-enterprise_ai}
+  OPA_URL: http://opa:8181
+  OPA_TOKEN: ${OPA_SERVICE_TOKEN:?set OPA_SERVICE_TOKEN in .env}
+  OIDC_ISSUER: http://localhost:8080/realms/enterprise-ai
+  OIDC_JWKS_URL: http://keycloak:8080/realms/enterprise-ai/protocol/openid-connect/certs
+  OIDC_AUDIENCE: enterprise-ai-api
+  OIDC_ALLOWED_CLIENTS: enterprise-ai-frontend,enterprise-ai-swagger,enterprise-ai-cli
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  OPA_DATA_FILE: /opa/policies/data.json
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-eai_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${APP_DB_NAME:-enterprise_ai}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.7
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD in .env}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD in .env}
+      # The issuer in every token is built from this URL, so it must be the URL the BROWSER uses.
+      KC_HOSTNAME: http://localhost:8080
+      # ...while the backend may fetch JWKS over the internal name http://keycloak:8080.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Keycloak image has no curl; talk HTTP to the management port (9000) with bash /dev/tcp.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks: [edge, data]
+
+  opa:
+    image: openpolicyagent/opa:1.22.4-debug
+    restart: unless-stopped
+    environment:
+      OPA_SERVICE_TOKEN: ${OPA_SERVICE_TOKEN:?set OPA_SERVICE_TOKEN in .env}
+    entrypoint: ["/bin/sh", "-c"]
+    # The bearer token is written into OPA's data tree at start-up; policies/system_authz.rego
+    # compares the caller's token against it. Only the backend knows the token.
+    command:
+      - |
+        printf '{"opa_service_token":"%s"}' "$$OPA_SERVICE_TOKEN" > /tmp/opa_auth.json &&
+        exec /opa run --server --addr=0.0.0.0:8181 \
+          --authentication=token --authorization=basic \
+          --set=decision_logs.console=true \
+          /policies /tmp/opa_auth.json
+    volumes:
+      - ./opa/policies:/policies:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8181/health >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]            # NOT published, NOT on the edge network
+
+  migrate:
+    # One-shot job holding the ONLY copy of the database owner credentials.
+    build:
+      context: ./backend
+      target: runtime
+    command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
+    environment:
+      <<: *backend-env
+      DATABASE_ADMIN_URL: postgresql+psycopg://${POSTGRES_SUPERUSER:-eai_owner}:${POSTGRES_PASSWORD}@postgres:5432/${APP_DB_NAME:-enterprise_ai}
+    volumes:
+      - ./opa/policies:/opa/policies:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [data]
+
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    environment:
+      <<: *backend-env           # runtime process only has the restricted eai_app role
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      opa:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [edge, data]
+
+  frontend:
+    # Static React build served by nginx. It only needs the edge network: the browser talks to the
+    # API (8000) and Keycloak (8080) directly. It has no route to OPA or PostgreSQL.
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+        VITE_KEYCLOAK_URL: http://localhost:8080
+        VITE_KEYCLOAK_REALM: enterprise-ai
+        VITE_KEYCLOAK_CLIENT_ID: enterprise-ai-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [edge]
+
+  # ---- test profile (not started by a plain `docker compose up`) -------------------------
+  opa-tests:
+    image: openpolicyagent/opa:1.22.4-debug
+    profiles: [test]
+    entrypoint: ["/opa"]
+    command: ["test", "/policies", "/tests", "-v"]
+    volumes:
+      - ./opa/policies:/policies:ro
+      - ./opa/tests:/tests:ro
+
+  tests:
+    profiles: [test]
+    build:
+      context: ./backend
+      target: test
+    environment:
+      <<: *backend-env
+      DATABASE_ADMIN_URL: postgresql+psycopg://${POSTGRES_SUPERUSER:-eai_owner}:${POSTGRES_PASSWORD}@postgres:5432/${APP_DB_NAME:-enterprise_ai}
+      REQUIRE_INTEGRATION: "1"
+    volumes:
+      - ./opa/policies:/opa/policies:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      opa:
+        condition: service_healthy
+    networks: [data]
+
+networks:
+  edge: {}
+  data:
+    internal: true
+
+volumes:
+  pgdata: {}
