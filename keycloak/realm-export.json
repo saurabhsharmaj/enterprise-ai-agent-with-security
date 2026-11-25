@@ -76,6 +76,7 @@
         "post.logout.redirect.uris": "http://localhost:3000/*"
       },
       "defaultClientScopes": [
+        "basic",
         "web-origins",
         "acr",
         "profile",
@@ -175,6 +176,7 @@
         "access.token.lifespan": "300"
       },
       "defaultClientScopes": [
+        "basic",
         "web-origins",
         "acr",
         "profile",
@@ -270,6 +272,7 @@
         "access.token.lifespan": "300"
       },
       "defaultClientScopes": [
+        "basic",
         "web-origins",
         "acr",
         "profile",

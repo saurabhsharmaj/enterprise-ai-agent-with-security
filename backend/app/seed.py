@@ -117,7 +117,8 @@ def main(reset: bool) -> None:
             c.execute(text(
                 "INSERT INTO invoices (id, tenant_id, vendor, description, amount, status, department, "
                 "classification, owner_id, approved_by, approved_at) "
-                "VALUES (:i, :t, :v, :d, :a, :s, :dp, :c, :o, :ab, CASE WHEN :ab IS NULL THEN NULL ELSE now() END) "
+                "VALUES (:i, :t, :v, :d, :a, :s, :dp, :c, :o, :ab, "
+                "CASE WHEN CAST(:ab AS uuid) IS NULL THEN NULL ELSE now() END) "
                 "ON CONFLICT (tenant_id, id) DO NOTHING"), params)
 
         if reset:
@@ -128,8 +129,8 @@ def main(reset: bool) -> None:
             c.execute(text("UPDATE users SET is_active = true"))
         for tenant, title, body, dept, cls, owner in DOCUMENTS:
             c.execute(text("INSERT INTO documents (tenant_id, title, body, department, classification, owner_id) "
-                           "SELECT :t, :ti, :b, :d, :c, :o WHERE NOT EXISTS "
-                           "(SELECT 1 FROM documents WHERE tenant_id = :t AND title = :ti)"),
+                           "SELECT CAST(:t AS varchar), CAST(:ti AS varchar), :b, :d, :c, CAST(:o AS uuid) WHERE NOT EXISTS "
+                           "(SELECT 1 FROM documents WHERE tenant_id = CAST(:t AS varchar) AND title = CAST(:ti AS varchar))"),
                       {"t": tenant, "ti": title, "b": body, "d": dept, "c": cls, "o": U[owner]})
     print("seed complete" + (" (reset)" if reset else ""))
 
