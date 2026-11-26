@@ -51,3 +51,29 @@ def test_reply_for_denial_is_the_executor_message_not_invented():
     out = StepOutcome("approve_invoice", {}, "denied", "Denied: your role does not have the required permission.", None,
                       ["missing_permission"])
     assert brain.respond("x", [out]) == "Denied: your role does not have the required permission."
+
+
+# ---- RAG routing (added with the knowledge base): questions go to ask_documents when the tool exists
+from app.agents.brain import ToolDescriptor as _TD  # noqa: E402
+
+_WITH_RAG = [_TD("ask_documents", "d", {})]
+
+
+def test_questions_about_policy_use_rag_when_available():
+    for msg in ("What is the expense reimbursement policy?", "How do vendors get onboarded?",
+                "Who approves invoices above 8000?"):
+        calls = brain.plan(msg, _WITH_RAG)
+        assert [c.tool for c in calls] == ["ask_documents"], msg
+        assert calls[0].arguments["question"] == msg
+
+
+def test_search_wording_and_missing_tool_keep_old_behaviour():
+    assert brain.plan("Search documents about policy", _WITH_RAG)[0].tool == "search_documents"
+    assert brain.plan("What is the expense policy?", [])[0].tool == "search_documents"
+    assert brain.plan("Read invoice INV-1001.", _WITH_RAG)[0].tool == "read_invoice"
+
+
+def test_generic_questions_use_rag_but_invoice_questions_do_not():
+    assert brain.plan("Where may employees park on weekdays?", _WITH_RAG)[0].tool == "ask_documents"
+    assert brain.plan("How many invoices are pending?", _WITH_RAG)[0].tool == "search_invoices"
+    assert brain.plan("hello", _WITH_RAG) == []

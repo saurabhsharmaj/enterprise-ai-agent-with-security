@@ -1,15 +1,18 @@
-"""Agent orchestrator: run the brain, push every proposed call through the secure ToolExecutor,
-and compose the response. The orchestrator itself makes NO authorisation decisions."""
+"""Agent orchestrator. The BRAIN decides which tools to use; discovery and execution go through the embedded MCP
+client/server; the executor authorises every call. The orchestrator itself makes NO authorisation decisions."""
 import logging
 from dataclasses import dataclass, field
 
-from app.agents.brain import AgentBrain, PlannedCall, StepOutcome, ToolDescriptor
-from app.agents.finance_agent import MockFinanceBrain
-from app.agents.tool_executor import ToolExecutor, ToolResult
+from app.agents.brain import AgentBrain, PlannedCall, StepOutcome
+from app.agents.factory import build_brains
+from app.agents.results import ToolResult
+from app.agents.tool_executor import ToolExecutor
 from app.audit.service import AuditEvent, AuditService
+from app.core.config import get_settings
 from app.core.security import RequestContext
-from app.repositories import agents as agents_repo
-from app.tools.registry import REGISTRY
+from app.guardrails import Guardrails
+from app.mcp.client import InProcessTransport, McpClient
+from app.mcp.server import McpServer
 
 log = logging.getLogger("orchestrator")
 
@@ -21,35 +24,44 @@ class ChatOutcome:
     reply: str
     steps: list[ToolResult] = field(default_factory=list)
     planned: list[PlannedCall] = field(default_factory=list)
+    guardrails: list[str] = field(default_factory=list)
+    transport: str = "mcp"
 
 
 class AgentOrchestrator:
-    def __init__(self, executor: ToolExecutor, audit: AuditService, brains: dict[str, AgentBrain] | None = None):
+    def __init__(self, executor: ToolExecutor, audit: AuditService, brains: dict[str, AgentBrain] | None = None,
+                 guardrails: Guardrails | None = None):
         self._executor = executor
         self._audit = audit
-        # Swap/extend here to register an LLM-backed brain per agent id.
-        self._brains: dict[str, AgentBrain] = brains or {"FINANCE_AGENT": MockFinanceBrain()}
+        settings = get_settings()
+        self._brains: dict[str, AgentBrain] = brains or build_brains(settings)
+        self.guardrails = guardrails or Guardrails(settings.guardrail_mode)
 
     def has_brain(self, agent_id: str) -> bool:
         return agent_id in self._brains
 
-    def run(self, ctx: RequestContext, agent_id: str, message: str) -> ChatOutcome:
+    def run(self, ctx: RequestContext, agent_id: str, message: str, input_flags: list[str] | None = None) -> ChatOutcome:
         brain = self._brains[agent_id]
-        # The brain sees the tool catalogue (names/schemas) from the DB-configured tools, never the user's identity.
-        configured = {t["tool_name"] for t in agents_repo.list_tools(ctx.db, ctx.principal.tenant_id, agent_id)}
-        catalogue = [ToolDescriptor(s.name, s.description, s.json_schema()) for s in REGISTRY.values()
-                     if s.name in configured]
+        mcp = McpClient(InProcessTransport(McpServer(self._executor, ctx, agent_id)))
+        mcp.initialize()
+        catalogue = mcp.list_tools()          # MCP tool discovery; the brain sees names/schemas, never identity
         ctx.db.rollback()
 
         planned = brain.plan(message, catalogue)[:MAX_STEPS]
         results: list[ToolResult] = []
         outcomes: list[StepOutcome] = []
         for call in planned:
-            result = self._executor.execute(ctx, call.tool, call.arguments, agent_id=agent_id)
+            result = mcp.call_tool(call.tool, call.arguments)       # MCP tools/call -> executor -> OPA
             results.append(result)
             outcomes.append(StepOutcome(call.tool, call.arguments, result.status, result.message, result.data,
                                         result.reasons, result.approval_request_id))
         reply = brain.respond(message, outcomes)
+        reply, redactions = self.guardrails.redact(reply)
+
+        flags = list(input_flags or []) + redactions
+        for r in results:
+            if r.tool == "ask_documents" and (r.data or {}).get("flagged_passages"):
+                flags.append("injection_in_retrieved_document")
 
         p = ctx.principal
         # Chat-level audit record. The message text itself is NOT stored (may contain sensitive content).
@@ -57,5 +69,6 @@ class AgentOrchestrator:
             tenant_id=p.tenant_id, user_id=p.user_id, username=p.username, agent_id=agent_id, action="chat",
             resource_type="agent", resource_id=agent_id, decision="ALLOW", execution_status="SUCCESS",
             reason="agent_execute_allowed", correlation_id=ctx.correlation_id, channel="agent",
-            detail={"steps": len(planned), "tools": ",".join(c.tool for c in planned)[:150]}))
-        return ChatOutcome(reply=reply, steps=results, planned=planned)
+            detail={"steps": len(planned), "tools": ",".join(c.tool for c in planned)[:150], "transport": "mcp",
+                    "guardrail_flags": ",".join(sorted(set(flags)))[:150]}))
+        return ChatOutcome(reply=reply, steps=results, planned=planned, guardrails=sorted(set(flags)))

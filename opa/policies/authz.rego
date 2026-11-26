@@ -94,6 +94,17 @@ deny contains "department_mismatch" if {
 	not department_ok
 }
 
+# New content may only be created in the author's own department (admins: any department of their tenant).
+# Needed separately because `owner_id == subject.id` (always true for something being created) satisfies
+# `department_ok` above.
+deny contains "department_mismatch" if {
+	input.resource.type == "document"
+	input.action == "create"
+	not is_collection
+	not is_admin
+	input.resource.department != input.subject.department
+}
+
 # --------------------------------------------------------------------------------------------
 # B3. ABAC: classification vs. role clearance
 # --------------------------------------------------------------------------------------------

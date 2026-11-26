@@ -23,6 +23,11 @@ _STOP = {"find", "search", "show", "list", "get", "me", "the", "a", "an", "for",
          "documents", "document", "my", "any", "please", "and", "with", "containing", "regarding"}
 
 
+_QUESTION = re.compile(r"^\s*(what|how|who|when|why|which|where|can|could|does|do|is|are|should|must|explain|tell me|summari[sz]e)\b|\?\s*$")
+_KNOWLEDGE = (r"\b(policy|policies|procedures?|process|rules?|guidelines?|threshold|limit|limits|reimburse\w*|expenses?|"
+              r"approv\w*|vendors?|onboarding|access|compensation|payment|payments|terms|checklist|standard|supplier)\b")
+
+
 class MockFinanceBrain:
     def plan(self, message: str, tools: list[ToolDescriptor]) -> list[PlannedCall]:
         text = message.strip()
@@ -41,6 +46,12 @@ class MockFinanceBrain:
             if vendor:
                 args["vendor"] = vendor.group(1).strip()
             return [PlannedCall("create_purchase_order", args)]
+
+        names = {t.name for t in tools}
+        # Questions about policy/procedure content -> RAG (only when the agent actually has that tool).
+        if "ask_documents" in names and _QUESTION.search(low) \
+                and (re.search(_KNOWLEDGE, low) or not re.search(r"\binvoices?\b", low)) and not inv:
+            return [PlannedCall("ask_documents", {"question": text[:300]})]
 
         if re.search(r"\b(documents?|policy|policies|procedures?|runbooks?)\b", low):
             words = [w for w in re.findall(r"[a-z0-9]+", low) if w not in _STOP]
@@ -100,6 +111,11 @@ class MockFinanceBrain:
         if o.tool == "create_purchase_order":
             po = d["purchase_order"]
             return f"Purchase order {po['po_number']} for {po['amount']} {po['currency']} was created."
+        if o.tool == "ask_documents":
+            if not d.get("passages"):
+                return "I could not find anything about that in the documents you are allowed to read."
+            refs = "\n".join(f"[{p['ref']}] {p['title']} ({p['classification']})" for p in d["passages"])
+            return f"{d.get('answer') or 'Relevant passages were found.'}\n\nSources:\n{refs}"
         if o.tool == "search_documents":
             if not d.get("documents"):
                 return "No documents matched that search."

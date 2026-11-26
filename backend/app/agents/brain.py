@@ -23,6 +23,7 @@ class ToolDescriptor:
 class PlannedCall:
     tool: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    call_id: str | None = None      # provider tool-call id (LLM brains); informational only
 
 
 @dataclass

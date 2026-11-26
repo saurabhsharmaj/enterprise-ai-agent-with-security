@@ -23,6 +23,11 @@ x-backend-env: &backend-env
   OIDC_ALLOWED_CLIENTS: enterprise-ai-frontend,enterprise-ai-swagger,enterprise-ai-cli
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
   OPA_DATA_FILE: /opa/policies/data.json
+  # Agent brain: "mock" (deterministic, default) or "llm" (set ANTHROPIC_API_KEY). Guardrails: off | monitor | block.
+  AGENT_BRAIN: ${AGENT_BRAIN:-mock}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
+  GUARDRAIL_MODE: ${GUARDRAIL_MODE:-monitor}
 
 services:
   postgres:

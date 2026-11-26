@@ -133,7 +133,7 @@ def test_agent_catalogue_lists_tools_and_what_i_may_execute(client):
     assert [a["id"] for a in agents] == ["FINANCE_AGENT"]
     assert agents[0]["can_execute"] is True
     assert {t["tool_name"] for t in agents[0]["tools"]} == {
-        "search_invoices", "read_invoice", "create_purchase_order", "approve_invoice", "search_documents"}
+        "search_invoices", "read_invoice", "create_purchase_order", "approve_invoice", "search_documents", "ask_documents"}
 
 
 def test_chat_is_rate_limited(client):

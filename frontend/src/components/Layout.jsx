@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { keycloak } from "../auth/keycloak";
+import ErrorBoundary from "./ErrorBoundary";
 import { Badge } from "./ui";
 
 function useCountdown(expiresAtSeconds) {
@@ -17,11 +18,13 @@ function useCountdown(expiresAtSeconds) {
 
 export default function Layout() {
   const { me, logout, can } = useAuth();
+  const location = useLocation();
   const left = useCountdown(me?.token_expires_at); // access token lifetime; keycloak-js refreshes it transparently
 
   const links = [
     ["/", "Dashboard", true],
     ["/chat", "Agent chat", can("agent:execute")],
+    ["/knowledge", "Knowledge base", can("document:read")],
     ["/users", "Users", can("user:read")],
     ["/roles", "Roles & permissions", can("role:read")],
     ["/agents", "Agents", can("agent:manage") || can("tool:configure")],
@@ -66,7 +69,9 @@ export default function Layout() {
         <p className="banner">
           Menu visibility is a UX hint. Every request is re-checked by the backend and Open Policy Agent.
         </p>
-        <Outlet />
+        <ErrorBoundary key={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );

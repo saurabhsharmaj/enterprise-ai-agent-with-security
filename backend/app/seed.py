@@ -34,6 +34,7 @@ AGENT_TOOLS = {
     "create_purchase_order": "Create a purchase order (within the caller's approval limit)",
     "approve_invoice": "Approve a pending invoice (within the caller's approval limit)",
     "search_documents": "Search documents visible to the caller",
+    "ask_documents": "Answer a question from the knowledge base (RAG) with citations",
 }
 
 # id, tenant, vendor, description, amount, status, department, classification, owner, approved_by
@@ -55,6 +56,36 @@ DOCUMENTS = [
     ("TENANT_A", "Q3 Budget Forecast", "Confidential budget forecast for the finance team.", "FINANCE", "CONFIDENTIAL", "bob"),
     ("TENANT_A", "IT Security Runbook", "Incident response steps for the IT department.", "IT", "INTERNAL", "alice"),
     ("TENANT_B", "Globex Procurement Policy", "Tenant B procurement rules. Invoice handling.", "FINANCE", "INTERNAL", "erin"),
+]
+
+# Longer knowledge-base documents so RAG has something real to retrieve. Classifications/departments exercise the
+# permission-filtered retrieval: EMPLOYEE (clearance 2) never sees CONFIDENTIAL+, only IT sees IT documents, etc.
+DOCUMENTS += [
+    ("TENANT_A", "Expense Reimbursement Guide",
+     "Employees reimburse business expenses by submitting receipts through the finance portal. Meals are reimbursed "
+     "up to 60 USD per day while travelling. Hotel stays must be booked through the approved travel agency. Receipts "
+     "older than 30 days are rejected unless a manager signs an exception. Reimbursements are paid in the next "
+     "payroll cycle after the expense report is approved.", "FINANCE", "INTERNAL", "bob"),
+    ("TENANT_A", "Procurement and Payment Thresholds",
+     "Purchase orders up to 10,000 USD may be created by a manager within their personal approval limit. Employees "
+     "cannot create purchase orders. Invoice approvals above 8,000 USD require an additional human sign-off by an "
+     "administrator before the payment is released. Invoices above a manager's approval limit must be escalated to "
+     "an administrator. Every approval is recorded in the audit log together with the approver and the amount.",
+     "FINANCE", "INTERNAL", "bob"),
+    ("TENANT_A", "Vendor Onboarding Checklist",
+     "New vendors must provide a tax form, bank confirmation letter and proof of insurance. Procurement verifies the "
+     "vendor against the sanctions list before the first purchase order is issued. Vendors are reviewed every twelve "
+     "months. Vendors that fail a review are blocked from receiving new purchase orders.", "FINANCE", "INTERNAL", "bob"),
+    ("TENANT_A", "Executive Compensation Bands",
+     "Confidential compensation bands for executive roles. Band E1 ranges from 180,000 to 240,000 USD. Band E2 ranges "
+     "from 240,000 to 330,000 USD. This document is restricted to administrators.", "FINANCE", "RESTRICTED", "alice"),
+    ("TENANT_A", "IT Access Control Standard",
+     "Access to production systems requires multi-factor authentication. Privileged access is granted for a maximum of "
+     "eight hours and is reviewed quarterly. Shared accounts are forbidden. Lost devices must be reported to the IT "
+     "security team within one hour so that tokens can be revoked.", "IT", "INTERNAL", "alice"),
+    ("TENANT_B", "Globex Supplier Code of Conduct",
+     "Globex suppliers must comply with the Globex ethics code. Supplier payments are made 45 days after invoice "
+     "approval. Tenant B managers approve invoices up to 5,000 USD.", "FINANCE", "INTERNAL", "erin"),
 ]
 
 TENANT_AGENTS = [("FINANCE_AGENT", "Finance Agent", "Searches and reads invoices, creates purchase orders, approves invoices.")]
@@ -96,7 +127,8 @@ def main(reset: bool) -> None:
                 "full_name = EXCLUDED.full_name, email = EXCLUDED.email"),
                 {"id": uid, "t": tenant, "u": uname, "e": email, "f": full, "d": dept, "l": limit})
             c.execute(text("DELETE FROM user_roles WHERE user_id = :u"), {"u": uid})
-            c.execute(text("INSERT INTO user_roles (user_id, role_id) SELECT :u, id FROM roles WHERE name = :r"),
+            # Explicit cast: a bare :u in a SELECT list has no inferable type (it would default to text, not uuid).
+            c.execute(text("INSERT INTO user_roles (user_id, role_id) SELECT CAST(:u AS uuid), id FROM roles WHERE name = :r"),
                       {"u": uid, "r": role})
 
         for tid, _ in TENANTS:
@@ -117,7 +149,8 @@ def main(reset: bool) -> None:
             c.execute(text(
                 "INSERT INTO invoices (id, tenant_id, vendor, description, amount, status, department, "
                 "classification, owner_id, approved_by, approved_at) "
-                "VALUES (:i, :t, :v, :d, :a, :s, :dp, :c, :o, :ab, "
+                # :ab is used twice, so it must be cast: Postgres cannot infer the type of $n inside CASE ... IS NULL.
+                "VALUES (:i, :t, :v, :d, :a, :s, :dp, :c, CAST(:o AS uuid), CAST(:ab AS uuid), "
                 "CASE WHEN CAST(:ab AS uuid) IS NULL THEN NULL ELSE now() END) "
                 "ON CONFLICT (tenant_id, id) DO NOTHING"), params)
 
@@ -128,10 +161,26 @@ def main(reset: bool) -> None:
             c.execute(text("UPDATE agent_tools SET enabled = true, requires_approval = false"))
             c.execute(text("UPDATE users SET is_active = true"))
         for tenant, title, body, dept, cls, owner in DOCUMENTS:
+            # Every parameter is cast: psycopg3/PostgreSQL cannot infer the type of a bare $n in a SELECT list.
             c.execute(text("INSERT INTO documents (tenant_id, title, body, department, classification, owner_id) "
-                           "SELECT CAST(:t AS varchar), CAST(:ti AS varchar), :b, :d, :c, CAST(:o AS uuid) WHERE NOT EXISTS "
+                           "SELECT CAST(:t AS varchar), CAST(:ti AS varchar), CAST(:b AS text), CAST(:d AS varchar), "
+                           "CAST(:c AS varchar), CAST(:o AS uuid) WHERE NOT EXISTS "
                            "(SELECT 1 FROM documents WHERE tenant_id = CAST(:t AS varchar) AND title = CAST(:ti AS varchar))"),
                       {"t": tenant, "ti": title, "b": body, "d": dept, "c": cls, "o": U[owner]})
+
+        # RAG index: (re)build chunks for any document that has none under the current embedder.
+        from app.rag.chunker import chunk_text
+        from app.rag.embedder import get_embedder
+        emb = get_embedder()
+        pending = c.execute(text(
+            "SELECT d.tenant_id, d.id, d.body FROM documents d WHERE NOT EXISTS (SELECT 1 FROM document_chunks k "
+            "WHERE k.tenant_id = d.tenant_id AND k.document_id = d.id AND k.embedder = :m)"), {"m": emb.name}).all()
+        for tenant, doc_id, body in pending:
+            c.execute(text("DELETE FROM document_chunks WHERE tenant_id = :t AND document_id = :d"), {"t": tenant, "d": doc_id})
+            for i, chunk in enumerate(chunk_text(body)):
+                c.execute(text("INSERT INTO document_chunks (tenant_id, document_id, chunk_index, content, embedding, embedder) "
+                               "VALUES (:t, :d, :i, :c, CAST(:e AS real[]), :m)"),
+                          {"t": tenant, "d": doc_id, "i": i, "c": chunk, "e": emb.embed(chunk), "m": emb.name})
     print("seed complete" + (" (reset)" if reset else ""))
 
 

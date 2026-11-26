@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     rate_limit_chat_per_minute: int = 30
     rate_limit_sensitive_per_minute: int = 20
 
+    # Agent brain / guardrails (all optional; defaults keep the deterministic mock agent)
+    agent_brain: str = "mock"                 # mock | llm
+    anthropic_api_key: str | None = None
+    anthropic_base_url: str = "https://api.anthropic.com"
+    llm_model: str = "claude-sonnet-5-5"
+    llm_timeout_seconds: float = 20.0
+    guardrail_mode: str = "monitor"           # off | monitor | block
+
     @property
     def allowed_clients(self) -> frozenset[str]:
         return frozenset(c.strip() for c in self.oidc_allowed_clients.split(",") if c.strip())

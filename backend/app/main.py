@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.mcp_http import router as mcp_router
 from app.api.router import api_router
 from app.core.config import get_settings
 
@@ -36,7 +37,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Correlation-ID"],
+        allow_headers=["Authorization", "Content-Type", "X-Correlation-ID", "MCP-Protocol-Version"],
         expose_headers=["X-Correlation-ID", "Retry-After"],
         allow_credentials=False,
         max_age=600,
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": {"error": "internal_error", "correlation_id": cid}})
 
     app.include_router(api_router)
+    app.include_router(mcp_router)
     return app
 
 

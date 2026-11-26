@@ -17,11 +17,11 @@ request. The LLM's proposed arguments are only ever *inputs to be validated*, ne
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import ValidationError
 
+from app.agents.results import ToolResult  # noqa: F401  (re-exported: existing imports keep working)
 from app.audit.service import AuditEvent, AuditService
 from app.authorization.opa_client import OpaClient
 from app.core.config import Settings
@@ -33,18 +33,6 @@ from app.tools.messages import explain
 from app.tools.registry import REGISTRY
 
 log = logging.getLogger("tool_executor")
-
-
-@dataclass
-class ToolResult:
-    tool: str
-    status: str            # success | denied | pending_approval | invalid_arguments | not_found | error
-    allowed: bool
-    reasons: list[str] = field(default_factory=list)
-    message: str = ""
-    data: dict | None = None
-    approval_request_id: str | None = None
-    audit_id: str | None = None
 
 
 def _args_hash(args: dict) -> str:

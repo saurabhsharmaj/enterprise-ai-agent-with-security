@@ -59,6 +59,8 @@ export const api = {
   approveInvoice: (id) => post(`/api/invoices/${id}/approve`), // resolves with {status, data} (200 or 202)
   createPurchaseOrder: (body) => post("/api/purchase-orders", body),
   authorizationCheck: (body) => post("/api/authorization/check", body).then((r) => r.data),
+  documents: () => get("/api/documents"),
+  createDocument: (body) => post("/api/documents", body).then((r) => r.data),
   users: () => get("/api/users"),
   updateUser: (id, body) => patch(`/api/users/${id}`, body),
   roles: () => get("/api/roles"),

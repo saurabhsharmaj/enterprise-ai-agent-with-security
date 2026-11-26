@@ -84,3 +84,8 @@ input[type="text"], .row input:not([type]) { flex: 1; min-width: 200px; }
 .demo summary { cursor: pointer; color: var(--brand); } .demo table { margin-top: 10px; }
 
 @media (max-width: 800px) { .shell { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; } .content { padding: 16px; } }
+
+/* RAG sources, stacked forms */
+.sources { margin: 6px 0; } .source { border-top: 1px dashed var(--line); padding: 4px 0; }
+.stack { display: flex; flex-direction: column; gap: 8px; } .stack textarea { font: inherit; padding: 8px; }
+.alert:not(.alert-error):not(.alert-denied) { border: 1px solid var(--ok); padding: 8px 12px; border-radius: 6px; margin-top: 8px; }

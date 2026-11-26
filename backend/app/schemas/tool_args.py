@@ -38,3 +38,8 @@ class CreatePurchaseOrderArgs(_Strict):
 class SearchDocumentsArgs(_Strict):
     query: ShortText
     limit: int = Field(default=10, ge=1, le=25)
+
+
+class AskDocumentsArgs(_Strict):
+    question: ShortText
+    top_k: int = Field(default=4, ge=1, le=8)

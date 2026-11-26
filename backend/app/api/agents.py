@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 from app.agents.orchestrator import AgentOrchestrator
 from app.audit.service import AuditEvent, AuditService, get_audit
 from app.authorization.opa_client import OpaClient, get_opa
+from app.guardrails import GuardrailBlocked
 from app.api.deps import get_authz, get_orchestrator
 from app.core.security import RequestContext, get_request_context, rate_limit
 from app.repositories import agents as repo
@@ -68,9 +69,21 @@ def chat(body: ChatRequest, agent_id: str = AgentId, ctx: RequestContext = Depen
     if not orchestrator.has_brain(agent_id):
         raise HTTPException(409, detail={"error": "agent_not_runnable"})
 
-    outcome = orchestrator.run(ctx, agent_id, body.message)
+    try:
+        input_scan = orchestrator.guardrails.enforce_input(body.message)
+    except GuardrailBlocked as blocked:
+        audit.record(AuditEvent(tenant_id=p.tenant_id, user_id=p.user_id, username=p.username, agent_id=agent_id,
+                                action="chat", resource_type="agent", resource_id=agent_id, decision="DENY",
+                                execution_status="NOT_EXECUTED", reason="guardrail_blocked",
+                                correlation_id=ctx.correlation_id, channel="agent",
+                                detail={"guardrail_flags": ",".join(blocked.flags)}))
+        raise HTTPException(422, detail={"error": "guardrail_blocked", "reasons": blocked.flags,
+                                         "message": "The request was blocked by the input guardrails.",
+                                         "correlation_id": ctx.correlation_id})
+    outcome = orchestrator.run(ctx, agent_id, body.message, input_scan.flags)
     return {
         "correlation_id": ctx.correlation_id, "agent_id": agent_id, "reply": outcome.reply,
+        "guardrails": outcome.guardrails, "transport": outcome.transport,
         "steps": [{
             "tool": call.tool, "arguments": call.arguments, "status": r.status, "allowed": r.allowed,
             "reasons": r.reasons, "message": r.message, "data": r.data,

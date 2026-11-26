@@ -5,6 +5,7 @@ import { Loading } from "./components/ui";
 import AgentChat from "./pages/AgentChat";
 import Agents from "./pages/Agents";
 import AuditLogs from "./pages/AuditLogs";
+import Knowledge from "./pages/Knowledge";
 import Dashboard from "./pages/Dashboard";
 import Login from "./pages/Login";
 import Roles from "./pages/Roles";
@@ -20,6 +21,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
         <Route path="chat" element={<AgentChat />} />
+        <Route path="knowledge" element={<Knowledge />} />
         <Route path="users" element={<Users />} />
         <Route path="roles" element={<Roles />} />
         <Route path="agents" element={<Agents />} />
