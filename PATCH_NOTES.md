@@ -1,32 +1,25 @@
-# Patch: MCP + RAG + guardrails + LLM brain + chat fix
+# Patch 2: native agent replaced by LangChain
 
-## Apply (from the folder that CONTAINS your `enterprise-ai-security/` directory)
-1. Unzip `enterprise-ai-security-patch.zip` there and let it overwrite/merge. It never touches your `.env`.
-2. Add to your `.env` (optional; defaults keep the mock agent): see the new block at the end of `.env.example`.
-3. Rebuild and re-run migrations + seed, and make OPA reload its policy files:
-   ```
-   docker compose up -d --build
-   docker compose restart opa
-   docker compose up -d --build backend frontend     # if anything is still on the old image
-   ```
-   (`migrate` runs automatically: migration 0002 + idempotent seed. No `down -v` needed; your data and Keycloak users stay.)
-4. Log out and in again (new permissions `document:read/create` come from the DB).
-5. Run tests:
-   ```
-   docker compose --profile test run --rm opa-tests     # 110 expected
-   docker compose --profile test run --rm tests
-   ```
-   Changed existing test: `tests/integration/test_agent_chat.py` now expects the 6th tool `ask_documents`.
+Apply exactly like patch 1: unzip over your `enterprise-ai-security/` folder (your `.env` is untouched), then
 
-## What is in it
-* Blank chat page: crash-proof chat rendering (every response field normalised), per-message and per-page error
-  boundaries that show the real error text instead of a white page.
-* Embedded MCP server + client; orchestrator discovers and executes tools through MCP; `POST /mcp/{agent_id}` for external clients.
-* RAG: chunking, embeddings, permission-filtered retrieval (OPA before ranking), `ask_documents` tool with citations,
-  Knowledge-base page, `/api/documents`, seeded corpus.
-* Guardrails (monitor/block), secret redaction, step cap; optional Claude brain (`AGENT_BRAIN=llm`).
-* Seed fix: all parameters cast (the `AmbiguousParameter` migrate error cannot recur).
-* Docs: `docs/AGENT_PLATFORM.md`.
+```
+docker compose up -d --build
+```
+`--build` is REQUIRED: the backend image now installs `langchain-core` and `langchain-anthropic` (needs internet during the build).
+No OPA restart, no migration, no `down -v`. Existing `.env` keeps working (`AGENT_BRAIN=mock|llm`, `ANTHROPIC_API_KEY`).
 
-## If the chat page ever still goes blank
-Press F12 → Console, send the message again and copy the red error. The new boundary also prints the message on screen.
+## What changed
+* New: `app/agents/lc_agent.py`, `lc_tools.py`, `lc_models.py`, `lc_factory.py` (LangChain agent, MCP-backed tools, chat models).
+* Rewritten: `app/agents/orchestrator.py`. Trimmed: `brain.py` (now only shared data types).
+* Removed: `app/agents/llm_brain.py`, `app/agents/factory.py` (delete them if they remain in your folder — the zip cannot delete files),
+  and `backend/tests/unit/test_llm_brain.py`.
+* `requirements.txt` (+2 packages), compose (LangSmith tracing forced off), chat response/audit now include `engine: "langchain"`,
+  UI shows a "langchain" badge. README + docs updated.
+* Security model unchanged: LangChain tools only call MCP, MCP only calls the executor, OPA decides.
+
+## Delete these three stale files
+```
+del backend\app\agents\llm_brain.py backend\app\agents\factory.py backend\tests\unit\test_llm_brain.py     (Windows)
+rm  backend/app/agents/llm_brain.py backend/app/agents/factory.py backend/tests/unit/test_llm_brain.py     (macOS/Linux)
+```
+(If you skip this nothing breaks: they are no longer imported anywhere, just dead code. Delete them to keep the project clean.)

@@ -85,7 +85,7 @@ Dashboard → *Ask the policy engine* lets you dry-run "could I do X?" without s
 ---
 
 ## 3. Architecture
-![Enterprise AI Flow](docs/enterprise_ai_flow.gif)
+
 ```
                       ┌──────────────────────────── host (localhost only) ───────────────────────────┐
                       │                                                                                │
@@ -101,7 +101,7 @@ Dashboard → *Ask the policy engine* lets you dry-run "could I do X?" without s
                       │  │  JWT validation (sig, iss, aud, exp, azp)               │                   │
                       │  │  → Principal (token + DB; never request params)         │                   │
                       │  │  → REST endpoints ─┐                                    │                   │
-                      │  │  → Agent chat → Orchestrator → Brain (mock/LLM: PROPOSES only)             │
+                      │  │  → Agent chat → Orchestrator → LangChain agent (PROPOSES only)           │
                       │  │                     ▼                                   │                   │
                       │  │              ┌──────────────┐  allow/deny    ┌────────┐ │                   │
                       │  │              │ ToolExecutor │───────────────▶│  OPA   │ │  internal-only    │
@@ -140,7 +140,7 @@ opa/tests/     *_test.rego (98 tests)
 backend/app/
   core/            config, jwt (validation), security (Principal, rate limit), db (tenant sessions + RLS hook)
   authorization/   opa_client.py (fail-closed; the only OPA caller)
-  agents/          brain.py (interface) finance_agent.py (mock) orchestrator.py tool_executor.py
+  agents/          lc_agent.py lc_tools.py lc_models.py lc_factory.py orchestrator.py tool_executor.py finance_agent.py (rules for the deterministic model)
   tools/           invoice_tools.py purchase_order_tools.py document_tools.py registry.py
   repositories/    tenant-scoped SQL      services/  authorization_service.py
   schemas/         strict API + tool-argument models
@@ -185,7 +185,7 @@ Run the policy tests natively: `docker compose --profile test run --rm opa-tests
 | JWT validation on every request | `core/jwt.py`: signature via Keycloak **JWKS**, RS256 only (blocks `alg:none` and HS256 key confusion), `iss`, `aud` (= `enterprise-ai-api`), `exp`/`iat`, authorised party `azp` ∈ allowed clients, required `sub`/`tenant_id`. JWKS unreachable ⇒ reject. |
 | Identity never from the client | Subject = validated token + DB row (department, approval limit, active flag). Request bodies cannot carry tenant/user/role (`extra=forbid`); a user with no DB row gets 403. |
 | Deny by default / OPA authoritative | Rego `default allow := false`; `OpaClient` returns **deny** on timeout, network error, undefined result or non-boolean. |
-| LLM never authorizes | The brain gets only message text + tool schemas; no identity, roles, tenant or limits. Its output is validated, then authorized. `approval_granted` is derived from a DB lookup, not from the model. |
+| LLM never authorizes | The LangChain model gets only message text + tool schemas; no identity, roles, tenant or limits. Its output is validated, then authorized. `approval_granted` is derived from a DB lookup, not from the model. |
 | Tenant isolation (3 layers) | (1) explicit `WHERE tenant_id` in every query; (2) **PostgreSQL RLS** (`FORCE ROW LEVEL SECURITY`; `app.tenant_id` set per transaction from the token; runtime role is non-owner, no BYPASSRLS); (3) OPA tenant check. |
 | IDOR | Lookups are tenant-scoped; foreign and nonexistent ids give the same "not found". |
 | Argument validation | Strict Pydantic per tool: id patterns, amount bounds/precision, string limits, unknown fields rejected. |
@@ -251,29 +251,20 @@ Coverage map:
 
 ## 8. Connecting a real LLM
 
-> **Update:** an LLM brain, an embedded MCP server/client, RAG and guardrails are now built in. Set `AGENT_BRAIN=llm` and
-> `ANTHROPIC_API_KEY` in `.env`. See **[docs/AGENT_PLATFORM.md](docs/AGENT_PLATFORM.md)**. The text below describes the
-> underlying seam and the rules that still apply.
+The agent runtime is **LangChain** (`langchain-core`, `langchain-anthropic`); tools are MCP-backed, so every call still
+passes the executor and OPA. Set `AGENT_BRAIN=llm` and `ANTHROPIC_API_KEY` in `.env` to use Claude (`ChatAnthropic`);
+the default is a deterministic LangChain chat model that needs no key. Full description, files and the rules to keep:
+**[docs/AGENT_PLATFORM.md](docs/AGENT_PLATFORM.md)**.
 
-The seam is `app/agents/brain.py`:
+Rules that still apply when you change the model or add tools:
 
-```python
-class AgentBrain(Protocol):
-    def plan(self, message: str, tools: list[ToolDescriptor]) -> list[PlannedCall]: ...
-    def respond(self, message: str, outcomes: list[StepOutcome]) -> str: ...
-```
-
-1. Create `app/agents/llm_brain.py` implementing both methods with your provider's SDK (add it to `requirements.txt`, pass the API key as an environment variable, never in code).
-2. `plan`: send the user message and the `tools` list (names, descriptions, JSON schemas) using the provider's tool-calling feature; map each returned tool call to `PlannedCall(tool, arguments)`.
-3. `respond`: send the executor outcomes back to the model to phrase the reply.
-4. Register it in `AgentOrchestrator.__init__`: `brains={"FINANCE_AGENT": LLMBrain(...)}`.
-
-**Do not change anything else.** The executor already treats the brain's output as untrusted. What you must *keep*:
-
-* The brain must **not** receive user id, roles, tenant, department or limits. Authorization depends on facts the model cannot see or change.
+* The model must **not** receive user id, roles, tenant, department or limits. Authorization depends on facts it cannot see or change.
 * Never add "you are allowed to…" to the system prompt as a control. The prompt is guidance; OPA is enforcement.
-* **Prompt injection through data**: invoice descriptions and document bodies flow back to the model in `respond`. A malicious document can try to steer it. Because every proposed call is still authorized for the *human user*, injection can at worst trigger actions that user is allowed to do. Keep `MAX_STEPS` low, keep the human-approval gate on high-risk tools (Agents page), and consider showing the user the proposed action before running state-changing tools.
-* Keep `chat` audit rows free of prompt text.
+* New tools go in the tool registry (so the executor/OPA govern them); never give LangChain a direct database or repository handle.
+* **Prompt injection through data**: document and invoice text flows back to the model as tool results. They are wrapped as untrusted
+  and flagged passages are withheld, but injection can still try to steer the model. It can at worst trigger actions the human user is
+  allowed to do. Keep the step cap low and the human-approval gate on high-risk tools.
+* Keep `chat` audit rows free of prompt text, and keep LangSmith tracing off.
 
 ---
 

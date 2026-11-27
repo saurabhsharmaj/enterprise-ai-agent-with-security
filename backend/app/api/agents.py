@@ -66,7 +66,7 @@ def chat(body: ChatRequest, agent_id: str = AgentId, ctx: RequestContext = Depen
         raise HTTPException(403, detail={"error": "forbidden", "reasons": list(decision.reasons),
                                          "message": f"Denied: {explain(decision.reasons)}.",
                                          "correlation_id": ctx.correlation_id})
-    if not orchestrator.has_brain(agent_id):
+    if not orchestrator.has_agent(agent_id):
         raise HTTPException(409, detail={"error": "agent_not_runnable"})
 
     try:
@@ -83,7 +83,7 @@ def chat(body: ChatRequest, agent_id: str = AgentId, ctx: RequestContext = Depen
     outcome = orchestrator.run(ctx, agent_id, body.message, input_scan.flags)
     return {
         "correlation_id": ctx.correlation_id, "agent_id": agent_id, "reply": outcome.reply,
-        "guardrails": outcome.guardrails, "transport": outcome.transport,
+        "guardrails": outcome.guardrails, "transport": outcome.transport, "engine": outcome.engine,
         "steps": [{
             "tool": call.tool, "arguments": call.arguments, "status": r.status, "allowed": r.allowed,
             "reasons": r.reasons, "message": r.message, "data": r.data,

@@ -46,6 +46,7 @@ export function normalizeReply(r) {
     cid: text(o.correlation_id),
     guardrails: asArray(o.guardrails).map(text),
     transport: text(o.transport),
+    engine: text(o.engine),
   };
 }
 
@@ -97,7 +98,8 @@ export function ChatMessage({ m }) {
           {m.steps.map((s, j) => <Step key={j} s={s} />)}
           <div className="muted small">
             correlation id: {m.cid}
-            {m.transport && <> · <Badge kind="info">via {m.transport.toUpperCase()}</Badge></>}
+            {m.engine && <> · <Badge kind="info">{m.engine}</Badge></>}
+            {m.transport && <> <Badge kind="info">via {m.transport.toUpperCase()}</Badge></>}
             {m.guardrails.map((g) => <Badge key={g} kind="warn">guardrail: {g}</Badge>)}
           </div>
         </>

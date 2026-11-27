@@ -1,14 +1,11 @@
-"""The agent 'brain' abstraction.
+"""Small data types shared by the deterministic rules engine (finance_agent.py) and the MCP layer.
 
-A brain turns a user message into PROPOSED tool calls, and turns tool results into a reply. That is
-all it can do. It never receives the user's identity, roles, tenant or limits, it has no database or
-OPA access, and nothing it returns is treated as authorisation: every proposed call goes through
-ToolExecutor, which validates, authorises (OPA) and audits it.
-
-To plug in a real LLM later, implement `AgentBrain` (see README: "Connecting a real LLM").
+The agent runtime itself is LangChain (see lc_agent.py). Whatever model drives it only PROPOSES tool calls; it never
+receives the user's identity, roles, tenant or limits, and nothing it returns is treated as authorisation: every
+proposed call goes through MCP -> ToolExecutor, which validates, authorises (OPA) and audits it.
 """
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -36,11 +33,3 @@ class StepOutcome:
     data: dict | None
     reasons: list[str]
     approval_request_id: str | None = None
-
-
-class AgentBrain(Protocol):
-    def plan(self, message: str, tools: list[ToolDescriptor]) -> list[PlannedCall]:
-        """Propose tool calls for the message. Output is UNTRUSTED."""
-
-    def respond(self, message: str, outcomes: list[StepOutcome]) -> str:
-        """Compose the final reply from executor outcomes."""

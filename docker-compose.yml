@@ -28,6 +28,9 @@ x-backend-env: &backend-env
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
   GUARDRAIL_MODE: ${GUARDRAIL_MODE:-monitor}
+  # LangChain/LangSmith tracing would ship prompts and tool data (tenant data!) to a third party: keep it OFF.
+  LANGSMITH_TRACING: "false"
+  LANGCHAIN_TRACING_V2: "false"
 
 services:
   postgres:

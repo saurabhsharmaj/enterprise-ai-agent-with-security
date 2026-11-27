@@ -1,4 +1,4 @@
-# Agent platform: MCP, RAG, guardrails, LLM brain
+# Agent platform: LangChain agent, MCP, RAG, guardrails
 
 ## 1. How a chat message flows now
 
@@ -8,10 +8,11 @@ Browser ──Bearer token──▶ POST /api/agents/{id}/chat
    2. OPA: may this user execute this agent?                         (deny → 403, audited)
    3. Guardrails: input scan (monitor: flag + audit │ block: 422)
    4. Orchestrator ── MCP client ──▶ MCP server (in-process, built FOR this user's request context)
-         initialize → tools/list      the tool catalogue the brain may choose from (no identity in it)
-   5. Brain (mock rules or Claude) DECIDES which tools to call           ← the only thing the brain does
-   6. MCP tools/call ─▶ ToolExecutor: strict args → DB-loaded resource → OPA → human-approval gate → execute → audit
-   7. Brain composes the reply; guardrails redact secrets; chat-level audit row (no prompt text)
+         initialize → tools/list      the tool catalogue the model may choose from (no identity in it)
+   5. LangChain agent (app/agents/lc_agent.py): chat model DECIDES which tools to call, possibly over several
+      rounds (hard cap: 3 tool calls per message)                  ← the only thing the model does
+   6. Each LangChain tool → MCP tools/call ─▶ ToolExecutor: strict args → DB-loaded resource → OPA → human-approval gate → execute → audit
+   7. Model writes the reply from the (untrusted-wrapped) tool results; guardrails redact secrets; chat-level audit row (no prompt text)
 ```
 
 The MCP layer is a *standard interface*, not a new trust boundary: the server is constructed from the authenticated
@@ -62,15 +63,26 @@ Guardrails are **defence in depth, not the security boundary** — OPA and the e
 | Secrets in replies (JWT, Bearer, API keys, AWS keys, private keys, `password=`) | redacted + flagged | same |
 | Fan-out | `MAX_STEPS = 3` tool calls per message (always) | same |
 
-## 5. Choosing the brain
+## 5. The LangChain agent
 
-| `AGENT_BRAIN` | Behaviour |
+The agent runtime is **LangChain** (`langchain-core` + `langchain-anthropic`). Files:
+
+| File | Role |
 |---|---|
-| `mock` (default) | deterministic rules, no API key; routes policy/procedure questions to `ask_documents` |
-| `llm` + `ANTHROPIC_API_KEY` | Claude (`LLM_MODEL`, default `claude-sonnet-5-5`) selects tools through the MCP catalogue (Anthropic Messages API tool use). It never sees identity, roles, tenant, limits or tokens. API failure ⇒ **no tool calls** (fail closed). Falls back to `mock` with a warning if the key is empty. |
+| `app/agents/lc_agent.py` | `LangChainAgent`: bounded tool-calling loop (`bind_tools` → `invoke` → `ToolMessage`), fail-closed on model errors, 3-call budget, hallucinated tool names still routed to the executor (denied + audited) |
+| `app/agents/lc_tools.py` | LangChain `StructuredTool`s whose function is `McpClient.call_tool`; results are shown to the model as `<tool_result untrusted="true">` and flagged RAG passages are withheld |
+| `app/agents/lc_models.py` | `build_chat_model`: `ChatAnthropic` or the deterministic `DeterministicFinanceModel` |
+| `app/agents/lc_factory.py` | one agent per agent id; model created once |
+| `app/agents/orchestrator.py` | MCP handshake + tool discovery, runs the agent, guardrails, chat-level audit |
 
-Set in `.env`, then `docker compose up -d --build backend`. Nothing else changes: every proposed call still goes
-through the executor, so a wrong, manipulated or hallucinated tool choice is denied, not executed.
+| `AGENT_BRAIN` | Chat model |
+|---|---|
+| `mock` (default) | `DeterministicFinanceModel` — a LangChain `BaseChatModel` driven by fixed rules; no API key, no network. The loop, tool calls and ToolMessages are the real LangChain ones. |
+| `llm` + `ANTHROPIC_API_KEY` | `ChatAnthropic(model=LLM_MODEL)` (default `claude-sonnet-5-5`). It never sees identity, roles, tenant, limits or tokens. API failure ⇒ **no tools run**. Empty key ⇒ falls back to `mock` with a warning. |
+
+Security rules that did not change: LangChain has **no other route to data** — tools only call MCP, MCP only calls the executor.
+Do **not** add tools that touch repositories or the database directly. Keep `LANGSMITH_TRACING=false` (compose sets it):
+traces would send prompts and tenant data to a third party. If you want tracing, self-host it and review what is logged first.
 
 ## 6. What changed in the database/policy
 

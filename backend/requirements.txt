@@ -8,3 +8,6 @@ psycopg[binary]==3.2.3
 alembic==1.14.0
 PyJWT[crypto]==2.10.1
 httpx==0.28.1
+# Agent runtime (LangChain). langchain-core = messages/tools/chat-model interfaces; langchain-anthropic = Claude chat model.
+langchain-core>=1.0,<2
+langchain-anthropic>=1.0,<2
