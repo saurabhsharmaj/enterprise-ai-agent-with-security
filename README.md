@@ -85,7 +85,7 @@ Dashboard → *Ask the policy engine* lets you dry-run "could I do X?" without s
 ---
 
 ## 3. Architecture
-
+![Enterprise AI Flow](docs/enterprise_ai_flow.gif)
 ```
                       ┌──────────────────────────── host (localhost only) ───────────────────────────┐
                       │                                                                                │
